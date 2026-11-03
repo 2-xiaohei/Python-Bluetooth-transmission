@@ -1,0 +1,17 @@
+.DS_Store
+**/.DS_Store
+**/__pycache__/
+*.py[cod]
+**/.pytest_cache/
+**/.venv/
+**/dist/
+**/build/
+*.egg-info/
+config.toml
+**/data/
+**/received_files/
+**/received_files_secure/
+*.zip
+*.pem
+*.key
+

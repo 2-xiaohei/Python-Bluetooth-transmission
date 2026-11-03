@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reliable-bluetooth-secure"
+version = "0.3.0"
+description = "Encrypted peer-to-peer BLE messaging and file transfer"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "bleak>=0.22,<2",
+    "bless>=0.3,<1; platform_system != 'Windows'",
+    "cryptography>=43,<47",
+]
+
+[project.scripts]
+reliable-bluetooth = "reliable_bluetooth.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

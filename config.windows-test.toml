@@ -1,0 +1,37 @@
+[bluetooth]
+target_address = ""
+target_name = ""
+service_uuid = "0000fff0-0000-1000-8000-00805f9b34fb"
+write_characteristic_uuid = "0000fff1-0000-1000-8000-00805f9b34fb"
+notify_characteristic_uuid = "0000fff2-0000-1000-8000-00805f9b34fb"
+expected_device_id = "windows-test-device"
+pair = false
+scan_timeout = 12.0
+connect_timeout = 15.0
+write_with_response = true
+write_chunk_size = 20
+chunk_delay = 0.01
+
+[protocol]
+version = 1
+handshake_timeout = 8.0
+ack_timeout = 0.8
+max_send_attempts_per_connection = 2
+heartbeat_interval = 10.0
+heartbeat_failures = 3
+max_frame_size = 1048576
+
+[reconnect]
+initial_delay = 0.5
+max_delay = 2.0
+multiplier = 2.0
+jitter = 0.0
+stable_reset_after = 60.0
+
+[storage]
+directory = "data/windows-test-outbox"
+retain_acked = true
+
+[app]
+log_level = "INFO"
+

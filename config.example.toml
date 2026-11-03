@@ -1,0 +1,39 @@
+[bluetooth]
+# At least one of target_address, target_name, or service_uuid must identify the device.
+target_address = ""
+target_name = "My BLE Device"
+service_uuid = "0000fff0-0000-1000-8000-00805f9b34fb"
+write_characteristic_uuid = "0000fff1-0000-1000-8000-00805f9b34fb"
+notify_characteristic_uuid = "0000fff2-0000-1000-8000-00805f9b34fb"
+expected_device_id = "device-001"
+pair = true
+scan_timeout = 10.0
+connect_timeout = 15.0
+write_with_response = true
+write_chunk_size = 180
+chunk_delay = 0.01
+
+[protocol]
+version = 1
+handshake_timeout = 8.0
+ack_timeout = 3.0
+max_send_attempts_per_connection = 3
+heartbeat_interval = 10.0
+heartbeat_failures = 3
+max_frame_size = 1048576
+
+[reconnect]
+initial_delay = 1.0
+max_delay = 30.0
+multiplier = 2.0
+jitter = 0.2
+stable_reset_after = 60.0
+
+[storage]
+# Relative paths are resolved from this configuration file.
+directory = "data/outbox"
+retain_acked = true
+
+[app]
+log_level = "INFO"
+
