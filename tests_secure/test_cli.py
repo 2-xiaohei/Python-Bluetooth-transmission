@@ -23,7 +23,7 @@ directory = "queue"
 
 class CliTests(unittest.TestCase):
     def test_secure_package_version(self) -> None:
-        self.assertEqual(__version__, "0.3.0")
+        self.assertEqual(__version__, "0.3.1")
 
     def test_send_and_status_use_text_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

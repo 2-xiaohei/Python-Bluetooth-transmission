@@ -18,6 +18,9 @@ from reliable_bluetooth.security import EphemeralKey, derive_session_channel
 
 
 class IncomingFileStoreTests(unittest.TestCase):
+    def test_secure_file_chunks_stay_responsive_on_low_mtu_links(self) -> None:
+        self.assertEqual(FILE_CHUNK_SIZE, 1024)
+
     def test_accept_persist_resume_deduplicate_and_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

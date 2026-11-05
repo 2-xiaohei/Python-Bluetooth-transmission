@@ -1,99 +1,65 @@
-# Reliable Bluetooth Secure 0.3
+# Reliable Bluetooth Secure
 
-这是独立的加密版 Python BLE 点对点客户端。Windows、macOS、Linux 使用相同源码和相同命令，两台设备都运行客户端，不区分服务端和客户端。
+一个使用 Python 实现的跨平台 BLE 点对点通信客户端。Windows、macOS 和 Linux 使用同一套协议与源码，两台设备都同时提供广播和扫描能力，不需要区分服务端与客户端。
 
-原来的 `reliable-bluetooth-client` 0.2 文件夹保持不变。加密版使用独立 BLE Service UUID 和 `RBS-` 广播名，不会把 0.2 客户端误认为兼容设备。
+## 功能
 
-## 加密设计
+- 自动广播并持续扫描附近兼容设备。
+- 首次使用六位配对码，后续通过已保存的信任关系免码认证。
+- 文本、文件、ACK 和控制消息端到端加密。
+- 每个发送动作都有明确结果，未收到 ACK 不会报告成功。
+- 连接中断后自动重连、重发和恢复文件传输。
+- 接收端按消息 ID 去重，避免 ACK 丢失造成重复显示。
+- 支持最大 10 MiB 文件、接收确认、断点续传和 SHA-256 校验。
+- 终端显示时间、状态和进度，异步输出后会恢复尚未发送的输入。
+- 使用本地 JSON 保存身份和状态，不使用 SQLite。
 
-本版本采用混合加密，而不是直接使用非对称算法加密大文件：
+## 加密模型
 
-- 每台设备首次启动生成长期 X25519 身份密钥。
-- 第一次配对交换 X25519 公钥，并使用六位配对码认证密钥交换。
-- 每次重新连接都生成新的临时 X25519 密钥，提供新的会话密钥和前向保密。
-- X25519 共享值、首次配对秘密和会话 nonce 通过 HKDF-SHA256 派生双向密钥。
-- 文本、文件名、文件大小、SHA-256、文件分片、发送回执都封装在 ChaCha20-Poly1305 密文中。
-- 每个方向使用独立密钥和 nonce 前缀，并使用 64 位递增计数器拒绝重放。
-- 篡改密文、使用错误密钥或修改关联数据都会导致认证失败，不会交给消息或文件处理逻辑。
+客户端采用 X25519 + HKDF-SHA256 + ChaCha20-Poly1305：
 
-BLE 链路上仍可观察连接时间、密文长度、会话 ID 和计数器，但看不到文本、文件名和文件内容。
+- 首次启动生成长期 X25519 身份密钥。
+- 首次配对交换身份公钥，并使用六位码认证密钥交换。
+- 每次连接生成新的临时 X25519 密钥和会话密钥。
+- 文本、文件名、文件大小、SHA-256、文件分片和 ACK 都包含在认证密文中。
+- 双向通信使用不同密钥和 nonce 前缀。
+- 递增计数器用于拒绝重放数据。
+- 密文被修改、密钥错误或关联数据不一致时，消息会被直接拒绝。
 
-接收方解密并校验成功后，文件会以普通文件保存到 `received_files_secure/`。本版本提供传输中加密，不提供接收文件的磁盘加密。
+BLE 链路观察者仍可能看到连接时间、密文长度和流量特征。六位码适合现场配对，但空间有限；在存在主动攻击风险的环境中，还应核对双方显示的公钥指纹。
 
-## 密钥文件
+## 环境要求
 
-设备身份、X25519 私钥、已信任设备公钥和派生信任秘密保存在：
+- Python 3.11 或更高版本。
+- 支持 BLE 的蓝牙适配器。
+- 已启动的系统蓝牙服务。
+- 当前终端拥有蓝牙访问权限。
+- Linux 当前用户拥有 BlueZ 和 D-Bus 权限，适配器支持 BLE 广播。
 
-```text
-data/secure_peer_store.json
-```
+## Windows
 
-不要把这个文件发送给其他人，也不要把一台设备的文件复制到另一台设备。macOS 和 Linux 会把权限设置为仅当前用户可读写。
-
-删除 `data/secure_peer_store.json` 会生成新身份，同时清除全部信任关系。另一台设备也需要删除自己的对应信任记录；最简单的重置方式是两边都删除该文件后重新配对。
-
-## 首次配对和指纹
-
-启动面板会显示本机六位配对码和公钥指纹：
-
-```text
-+------------------------------------------------------+
-| Reliable Bluetooth Secure                            |
-+------------------------------------------------------+
-| Device: My-PC                                        |
-| Pairing code: 123456                                 |
-| Key fingerprint: A1B2-C3D4-E5F6-0718                 |
-| Encryption: X25519 + ChaCha20-Poly1305               |
-| Mode: advertising + continuous scanning              |
-| Key store: local JSON; do not share                  |
-+------------------------------------------------------+
-```
-
-配对步骤：
-
-1. 两台设备都启动加密版。
-2. 只在一台设备上选择对方，另一台保持扫描等待。
-3. 主动连接端输入等待端显示的六位配对码。
-4. 连接成功后终端显示对方公钥指纹。
-5. 首次配对建议核对该指纹是否等于对方启动面板中的 `Key fingerprint`。
-
-成功状态：
-
-```text
-[2026-11-03 15:30:00] [ OK ] Encrypted session ready with My-PC
-[2026-11-03 15:30:00] [INFO] Peer key fingerprint: A1B2-C3D4-E5F6-0718
-```
-
-六位码的取值空间有限。在可能存在主动攻击者的环境中，必须同时核对公钥指纹；只核对六位码不等同于高强度身份验证。
-
-## Windows 安装和运行
-
-要求 Python 3.11 或更高版本。进入本文件夹后运行：
+进入本目录后运行：
 
 ```cmd
 setup_windows.cmd
-run_windows.cmd
-```
-
-指定名称：
-
-```cmd
 run_windows.cmd --name My-Windows-PC
 ```
 
-## macOS 安装和运行
+安装脚本会创建 `.venv` 并安装运行依赖。再次运行客户端不需要重复执行安装脚本，除非源码或依赖已经更新。
 
-在“系统设置 -> 隐私与安全性 -> 蓝牙”中允许当前终端访问蓝牙，然后运行：
+## macOS
+
+先在“系统设置 -> 隐私与安全性 -> 蓝牙”中允许 Terminal、iTerm 或当前终端访问蓝牙，然后运行：
 
 ```bash
 chmod +x setup_unix.sh run_unix.sh
 ./setup_unix.sh
-./run_unix.sh
+./run_unix.sh --name My-Mac
 ```
 
-## Linux 安装和运行
+## Linux
 
-Debian/Ubuntu 可先准备 BlueZ 和 Python：
+Debian/Ubuntu 可以先安装 BlueZ 和 Python 虚拟环境支持：
 
 ```bash
 sudo apt update
@@ -106,49 +72,70 @@ sudo systemctl enable --now bluetooth
 ```bash
 chmod +x setup_unix.sh run_unix.sh
 ./setup_unix.sh
-./run_unix.sh
+./run_unix.sh --name My-Linux-PC
 ```
 
-Linux 适配器必须支持 BLE 广播，当前用户也必须有 BlueZ 和 D-Bus 权限。
+不建议长期使用 `sudo` 启动客户端。遇到权限问题时，应按发行版规则为当前用户配置 BlueZ 和 D-Bus 权限。
 
-## 发送文本
+## 首次配对
 
-加密会话建立后直接输入文本并回车：
+两台设备启动后都会显示本机配对码和密钥指纹：
 
 ```text
-hello
++------------------------------------------------------+
+| Reliable Bluetooth Secure <version>                  |
++------------------------------------------------------+
+| Device: My-PC                                        |
+| Pairing code: 123456                                 |
+| Key fingerprint: A1B2-C3D4-E5F6-0718                 |
+| Encryption: X25519 + ChaCha20-Poly1305               |
+| Mode: advertising + continuous scanning              |
+| Key store: local JSON; do not share                  |
++------------------------------------------------------+
 ```
 
-只有收到加密 ACK 后才显示发送成功。ACK 丢失时使用相同消息 ID 和新的加密计数器重发；接收方跨重连保存最近 2048 个消息 ID，避免重复显示。
+配对步骤：
 
-退出：
+1. 两台设备都启动客户端。
+2. 只在一台设备上选择对方，另一台保持等待。
+3. 主动连接端输入等待端显示的六位配对码。
+4. 双方显示 `Encrypted session ready` 后核对对方指纹。
+5. 以后连接同一设备时自动认证，不再要求输入配对码。
+
+如果本机等待选择时先收到并完成了对方连接，设备选择会立即取消并进入通信界面。
+
+## 文本通信
+
+建立会话后，输入普通文本并回车。发送方只有收到对端的加密 ACK 才会显示成功：
 
 ```text
-/quit
+[2026-11-05 21:12:38] [ OK ] Text delivered id=b1ecad4b status=success attempts=1
 ```
 
-## 发送文件
+每条文本使用稳定的 `message_id`。连接中断后客户端会在新会话中使用同一 ID 继续发送，接收端会把重复消息识别为已处理内容并返回结果，不会重复显示。
 
-文件上限仍为 10 MiB：
+## 文件传输
+
+发送不超过 10 MiB 的文件：
 
 ```text
-/sendfile /path/to/report.zip
+/sendfile "/path/to/report.zip"
 ```
 
-Windows 路径包含空格时：
+Windows 示例：
 
 ```text
-/sendfile "C:\Users\name\Desktop\my report.zip"
+/sendfile "C:\Users\name\Desktop\report.zip"
 ```
 
-接收端使用请求 ID 接受或拒绝：
+接收端根据终端显示的八位请求 ID 接受或拒绝：
 
 ```text
 /accept 12ab34cd
 /reject 12ab34cd
 ```
 
-文件元数据和每个 4 KiB 分片都单独加密并认证。每个动作仍有独立 `request_id` 和加密 ACK；断线后重新协商新会话密钥，再从接收方已保存的偏移继续。最终必须通过文件大小和 SHA-256 校验。
+文件元数据和每个 1 KiB 分片都独立加密并等待 ACK。接收端保存已写入偏移，断线重连后从该位置继续。完成时必须同时通过文件大小和 SHA-256 校验，发送方才会显示成功。
 
 指定接收目录：
 
@@ -156,39 +143,121 @@ Windows 路径包含空格时：
 ./run_unix.sh --receive-dir /path/to/received
 ```
 
-Windows：
-
 ```cmd
 run_windows.cmd --receive-dir D:\BluetoothFiles
 ```
 
-## 版本兼容
+## 可靠性机制
 
-- 0.3 加密版只能与 0.3 加密版通信。
-- 0.2 原版只能与 0.2 原版通信。
-- 两个版本的运行目录、虚拟环境、BLE UUID、广播名和默认密钥文件互相独立。
-- 给其他人使用时，应发送整个 `reliable-bluetooth-secure-client` 文件夹，不要包含 `.venv/`、`data/`、`received_files_secure/` 或 `__pycache__/`。
+底层 BLE 写入成功只说明数据进入蓝牙链路，不代表对方已经处理。客户端使用应用层 ACK 确认配对、文本和文件动作：
 
-| 通信组合 | 是否支持 | 校验情况 |
+| 动作 | 关联字段 | 成功条件 |
 | --- | --- | --- |
-| `0.3` ↔ `0.3` | 支持 | 本地与 Windows 测试通过，并完成 macOS ↔ Windows 真实 BLE 联调 |
-| `0.2` ↔ `0.2` | 支持 | 两个平台使用相同源码和协议，已通过自动化测试 |
-| `0.2` ↔ `0.3` | 不支持 | 已做代码层兼容性校验，尚未做专门的跨版本真机连接尝试 |
+| 配对和认证 | 会话 nonce | 双方完成最终握手确认 |
+| 文本消息 | `message_id` | 收到 `success` 或 `duplicate` ACK |
+| 文件请求、分片和完成 | `request_id` | 收到对应文件 ACK 和有效状态 |
 
-0.2 使用 Service UUID `0000fff0-0000-1000-8000-00805f9b34fb` 和 `RB-` 广播名；0.3 使用 Service UUID `7b9e0001-8f4b-4f3f-a6c5-7a0d1e2c9000` 和 `RBS-` 广播名。0.3 扫描器只接受自己的 Service UUID，因此不会把 0.2 当作兼容设备，也不会自动降级成明文连接。
+如果一个会话连续无法确认数据，客户端会发送加密重连请求并废弃旧会话。重连后文本保留原消息 ID，文件从已确认偏移继续。扫描和等待没有整体超时时间，程序会持续尝试恢复，直到动作成功、被明确拒绝或用户退出。
 
-## 常见问题
+## 命令和参数
+
+| 输入 | 功能 |
+| --- | --- |
+| 普通文本 | 发送聊天消息 |
+| `/sendfile PATH` | 发送文件 |
+| `/accept ID` | 接受文件 |
+| `/reject ID` | 拒绝文件 |
+| `/quit` | 退出程序 |
+
+查看参数：
+
+```bash
+./run_unix.sh --help
+```
+
+常用参数：
+
+```text
+--name NAME          设置显示名称
+--auto               自动选择信号最强的兼容设备
+--scan-timeout SEC   设置每轮扫描时长，不限制总等待时间
+--receive-dir PATH   设置接收目录
+--send TEXT          发送一条文本后退出
+```
+
+## 本地身份和数据
+
+设备身份和信任关系保存在：
+
+```text
+data/secure_peer_store.json
+```
+
+该文件包含本机 X25519 私钥、可信设备公钥和派生信任秘密。不要上传、分享，或从一台设备复制到另一台设备。
+
+接收文件和断点状态默认保存在：
+
+```text
+received_files_secure/
+```
+
+这些路径和 `.venv/` 都属于本机数据，并已从 Git 排除。删除 `secure_peer_store.json` 会创建新设备身份；需要重置配对时，应让双方都清理各自的信任数据后重新配对。
+
+## 兼容性
+
+Secure 客户端使用：
+
+```text
+Service UUID: 7b9e0001-8f4b-4f3f-a6c5-7a0d1e2c9000
+广播名前缀: RBS-
+```
+
+它只能与相同 Secure 协议客户端通信。仓库中的 Classic 客户端使用其他 UUID、`RB-` 广播名和明文握手，双方不会互相发现为兼容节点。
+
+## 分享客户端
+
+可以分享整个 `reliable-bluetooth-secure-client` 源码目录，但必须排除本机生成的数据：
+
+```text
+.venv/
+data/
+received_files_secure/
+__pycache__/
+*.pyc
+```
+
+接收者运行对应平台的安装脚本后，会生成自己的虚拟环境、设备身份和配对码。
+
+## 自动化测试
+
+测试覆盖配对、密钥协商、免码重连、ACK 重发、跨会话去重、文件续传、失效会话恢复、密文篡改拒绝和重放拒绝。
+
+从仓库根目录运行：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=reliable-bluetooth-secure-client/src \
+reliable-bluetooth-secure-client/.venv/bin/python \
+  -m unittest discover -s tests_secure -v
+```
+
+## 故障排查
 
 ### 找不到设备
 
-- 确认两端运行的都是 0.3 加密版，广播名应以 `RBS-` 开头。
-- 确认蓝牙已打开，终端具有蓝牙权限。
+- 确认两端都运行 Secure 客户端，广播名应以 `RBS-` 开头。
+- 检查蓝牙开关、终端权限和系统蓝牙服务。
+- 确认 Linux 适配器支持 BLE 广播。
 - 只在一端选择设备，另一端保持等待。
 
 ### 提示公钥变化
 
-这表示对方的长期身份密钥与首次配对时不同。不要直接忽略。先确认对方是否删除了 `secure_peer_store.json` 或重新安装；确认后两边清除旧信任并重新配对。
+对方身份与本地信任记录不同。先确认对方是否清除了设备身份；确认后，让双方删除各自的 `data/secure_peer_store.json` 并重新配对。
 
 ### 解密或认证失败
 
-程序会丢弃认证失败、被篡改或重放的密文。持续出现时应重新连接；如果信任文件不一致，两边清除 `data/secure_peer_store.json` 后重新配对。
+认证失败、被篡改或重放的数据都会被丢弃。如果问题持续出现，检查双方信任数据，必要时同时重置身份后重新配对。
+
+### 信号弱或频繁重连
+
+未完成动作会保留并自动恢复，但 BLE 文件吞吐量会随信号质量明显下降。让设备靠近、减少 2.4 GHz 干扰，并避免两端同时主动选择设备。

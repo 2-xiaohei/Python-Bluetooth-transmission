@@ -202,6 +202,43 @@ class PeerSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_ids, ["encrypted", "encrypted"])
         self.assertEqual(received, ["once"])
 
+    async def test_encrypted_reconnect_request_discards_peer_session(self) -> None:
+        session_a = None
+        session_b = None
+        wire_a: list[dict] = []
+
+        async def send_a(message):
+            assert session_b is not None
+            wire_a.append(message)
+            await session_b.handle_message(message)
+
+        async def send_b(message):
+            assert session_a is not None
+            await session_a.handle_message(message)
+
+        session_a = PeerSession(
+            local_id="a",
+            local_name="peer-a",
+            pair_code="123456",
+            send_message=send_a,
+        )
+        session_b = PeerSession(
+            local_id="b",
+            local_name="peer-b",
+            pair_code="123456",
+            send_message=send_b,
+        )
+        await session_a.initiate_handshake()
+        wire_a.clear()
+
+        await session_a.request_reconnect("message ACK timed out")
+
+        self.assertFalse(session_b.connected.is_set())
+        self.assertTrue(session_b.ended.is_set())
+        self.assertEqual(len(wire_a), 1)
+        self.assertEqual(wire_a[0].get("type"), SECURE_ENVELOPE_TYPE)
+        self.assertNotIn("message ACK timed out", json.dumps(wire_a))
+
     async def test_message_deduplication_survives_reconnection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -446,6 +483,69 @@ class PeerCoordinationTests(unittest.IsolatedAsyncioTestCase):
 
         console.feed_line("hello")
         self.assertEqual(await console.read(), "hello")
+
+    async def test_interactive_console_uses_redrawing_prompt(self) -> None:
+        console = ConsoleInput()
+        prompt_session = SimpleNamespace(prompt_async=AsyncMock(return_value="hello"))
+        console._prompt_session = prompt_session
+        console._prompt_lock = asyncio.Lock()
+
+        self.assertEqual(await console.read("\033[36m> \033[0m"), "hello")
+        prompt_session.prompt_async.assert_awaited_once()
+        formatted_prompt = prompt_session.prompt_async.await_args.args[0]
+        self.assertEqual(formatted_prompt.value, "\033[36m> \033[0m")
+
+    async def test_unacknowledged_text_waits_for_fresh_session(self) -> None:
+        app = PeerApplication("a")
+        first = self.session("a", "b", "outgoing")
+        first.on_reset = app.clear_session
+        first.connected.set()
+        first.accepted = True
+        first.send_text = AsyncMock(
+            side_effect=PeerError("Message fixed-id was not acknowledged")
+        )
+        first.request_reconnect = AsyncMock()
+        self.assertTrue(app.set_session(first))
+
+        sender = asyncio.create_task(app.sender_loop())
+        sending = asyncio.create_task(app.send("hello after reconnect"))
+        try:
+            await asyncio.wait_for(first.ended.wait(), timeout=1.0)
+            for _ in range(10):
+                if app.session is None:
+                    break
+                await asyncio.sleep(0)
+            self.assertIsNone(app.session)
+            first.request_reconnect.assert_awaited_once()
+
+            replacement = self.session("a", "b", "outgoing")
+            replacement.connected.set()
+            replacement.accepted = True
+            observed: list[tuple[str, str]] = []
+
+            async def deliver(message_id: str, text: str) -> dict:
+                observed.append((message_id, text))
+                return {
+                    "action": "text",
+                    "message_id": message_id,
+                    "status": "success",
+                    "attempts": 1,
+                }
+
+            replacement.send_text = AsyncMock(side_effect=deliver)
+            self.assertTrue(app.set_session(replacement))
+
+            result = await asyncio.wait_for(sending, timeout=1.0)
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(observed[0][1], "hello after reconnect")
+            first_id = first.send_text.await_args.args[0]
+            self.assertEqual(observed[0][0], first_id)
+        finally:
+            app.stop.set()
+            sender.cancel()
+            sending.cancel()
+            await asyncio.gather(sender, sending, return_exceptions=True)
 
     async def test_peripheral_keeps_state_until_handshake_confirmation(self) -> None:
         app = PeerApplication("b")

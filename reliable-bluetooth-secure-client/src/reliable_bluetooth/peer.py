@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .file_transfer import (
     FILE_CHUNK_SIZE,
     FileTransferError,
@@ -53,6 +54,7 @@ MAX_REMEMBERED_MESSAGE_IDS = 2_048
 ENCRYPTED_MESSAGE_TYPES = {
     "peer_message",
     "peer_ack",
+    "peer_reconnect",
     "peer_file_offer",
     "peer_file_offer_ack",
     "peer_file_chunk",
@@ -717,6 +719,14 @@ class PeerSession:
             if waiter is not None and not waiter.done():
                 waiter.set_result(message)
             return
+        if message_type == "peer_reconnect":
+            reason = message.get("reason")
+            logger.warning(
+                "Peer requested a fresh encrypted session%s",
+                f": {reason}" if isinstance(reason, str) and reason else "",
+            )
+            self.reset()
+            return
         if message_type == "peer_file_offer":
             await self._handle_file_offer(message)
             return
@@ -908,6 +918,15 @@ class PeerSession:
             raise PeerError("Encrypted peer session is not ready")
         await self.send_message(self._secure_channel.encrypt(message))
 
+    async def request_reconnect(self, reason: str) -> None:
+        """Best-effort signal that asks the peer to discard this session."""
+        await self._send_application(
+            {
+                "type": "peer_reconnect",
+                "reason": reason[:200],
+            }
+        )
+
     @property
     def handshake_in_progress(self) -> bool:
         return self._pending_handshake is not None
@@ -1079,18 +1098,30 @@ class OutgoingFile:
 
 
 class ConsoleInput:
-    """Read stdin once and distribute complete lines through one async queue."""
+    """Read complete lines without letting asynchronous output corrupt input."""
 
     def __init__(self) -> None:
         self.queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._closed = threading.Event()
         self._thread: threading.Thread | None = None
+        self._prompt_session: Any = None
+        self._prompt_lock: asyncio.Lock | None = None
+        self._stdout_patcher: Any = None
 
     def start(self) -> None:
-        if self._thread is not None:
+        if self._thread is not None or self._prompt_session is not None:
             return
         self._loop = asyncio.get_running_loop()
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            from prompt_toolkit import PromptSession
+            from prompt_toolkit.patch_stdout import patch_stdout
+
+            self._prompt_session = PromptSession()
+            self._prompt_lock = asyncio.Lock()
+            self._stdout_patcher = patch_stdout(raw=True)
+            self._stdout_patcher.__enter__()
+            return
         self._thread = threading.Thread(
             target=self._read_stdin,
             name="peer-console-reader",
@@ -1100,8 +1131,18 @@ class ConsoleInput:
 
     def close(self) -> None:
         self._closed.set()
+        patcher = self._stdout_patcher
+        self._stdout_patcher = None
+        if patcher is not None:
+            patcher.__exit__(None, None, None)
 
     async def read(self, prompt: str = "") -> str:
+        if self._prompt_session is not None:
+            from prompt_toolkit.formatted_text import ANSI
+
+            assert self._prompt_lock is not None
+            async with self._prompt_lock:
+                return await self._prompt_session.prompt_async(ANSI(prompt))
         if prompt:
             print(prompt, end="", flush=True)
         value = await self.queue.get()
@@ -1192,6 +1233,24 @@ class PeerApplication:
             self.session_available.set()
             status("warning", "Peer disconnected; waiting for reconnection...")
 
+    async def invalidate_session(self, session: PeerSession, reason: str) -> None:
+        if self.session is not session:
+            return
+        status(
+            "warning",
+            f"Link stopped acknowledging data ({reason}); reconnecting...",
+        )
+        try:
+            await asyncio.wait_for(
+                session.request_reconnect(reason), timeout=2.0
+            )
+        except Exception:
+            logger.debug(
+                "Could not deliver encrypted reconnect request", exc_info=True
+            )
+        finally:
+            session.reset()
+
     async def sender_loop(self) -> None:
         while not self.stop.is_set():
             item = await self.outgoing.get()
@@ -1211,6 +1270,7 @@ class PeerApplication:
                         break
                     except Exception as exc:
                         logger.warning("Send interrupted: %s", exc)
+                        await self.invalidate_session(session, str(exc))
                         await asyncio.sleep(0.25)
                         continue
                     if not item.completed.done():
@@ -1244,6 +1304,7 @@ class PeerApplication:
                         break
                     except Exception as exc:
                         logger.warning("File send interrupted: %s", exc)
+                        await self.invalidate_session(session, str(exc))
                         await asyncio.sleep(0.25)
                         continue
                     if not item.completed.done():
@@ -2284,7 +2345,7 @@ async def run_peer(args: argparse.Namespace) -> int:
     )
     label = "Pairing code for new peers only" if store.has_trusted_peers else "Pairing code"
     panel(
-        "Reliable Bluetooth Secure",
+        f"Reliable Bluetooth Secure {__version__}",
         (
             ("Device", name),
             (label, local_pair_code),

@@ -11,7 +11,9 @@ from typing import Callable
 
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
-FILE_CHUNK_SIZE = 4096
+# Keep encrypted frames short enough that control messages are not starved on
+# low-MTU or weak BLE links. Transfers remain resumable at every chunk.
+FILE_CHUNK_SIZE = 1024
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
